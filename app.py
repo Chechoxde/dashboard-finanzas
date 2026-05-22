@@ -4,7 +4,7 @@ from supabase import create_client, Client
 import plotly.express as px
 
 # Configuración de la página
-st.set_page_config(page_title="Dashboard S&F Atelier", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Dashboard Sergio Ruiz", page_icon="📊", layout="wide")
 
 # --- 1. CAPA DE SEGURIDAD ---
 if "autenticado" not in st.session_state:
@@ -61,7 +61,7 @@ def cargar_datos():
     return df_completo
 
 # --- 3. INTERFAZ DEL DASHBOARD ---
-st.title("📊 Panel Financiero - S&F Atelier")
+st.title("📊 Panel Financiero - Sergio Ruiz")
 st.markdown("---")
 
 df = cargar_datos()
