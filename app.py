@@ -31,7 +31,7 @@ def init_connection():
 
 supabase: Client = init_connection()
 
-@st.cache_data(ttl=60) # Guarda los datos en caché por 60 segundos para no saturar Supabase
+@st.cache_data(ttl=60) # Guarda los datos en caché por 60 segundos
 def cargar_datos():
     # Descargar tablas
     trans = supabase.table("transacciones").select("*").execute().data
@@ -45,9 +45,22 @@ def cargar_datos():
     df_cats = pd.DataFrame(cats)
     df_subcats = pd.DataFrame(subcats)
     
-    # Cruzar datos (Joins) para tener nombres legibles en vez de IDs
-    df_completo = pd.merge(df_trans, df_subcats, left_on="subcategoria_id", right_on="id", suffixes=("", "_sub"))
-    df_completo = pd.merge(df_completo, df_cats, left_on="categoria_id", right_on="id", suffixes=("", "_cat"))
+    # 1. Cruzar con subcategorías usando LEFT JOIN para no perder filas
+    df_completo = pd.merge(df_trans, df_subcats, left_on="subcategoria_id", right_on="id", how="left", suffixes=("", "_sub"))
+    
+    # 2. Cruzar con categorías usando LEFT JOIN
+    df_completo = pd.merge(df_completo, df_cats, left_on="categoria_id", right_on="id", how="left", suffixes=("", "_cat"))
+    
+    # 3. Rellenar los vacíos (Por si alguna transacción no enlazó bien su categoría)
+    if 'nombre' in df_completo.columns:
+        df_completo['nombre'] = df_completo['nombre'].fillna('Sin Subcategoría')
+    else:
+        df_completo['nombre'] = 'Sin Subcategoría'
+        
+    if 'nombre_cat' in df_completo.columns:
+        df_completo['nombre_cat'] = df_completo['nombre_cat'].fillna('Sin Categoría')
+    else:
+        df_completo['nombre_cat'] = 'Sin Categoría'
     
     # Limpiar y renombrar para el análisis
     df_completo.rename(columns={
@@ -108,7 +121,11 @@ else:
     
     # Tabla de últimos movimientos
     st.subheader("Últimos Movimientos Registrados")
-    columnas_mostrar = ['Fecha', 'tipo_movimiento', 'Categoría', 'Subcategoría', 'Monto', 'descripcion']
+    
+    # Asegurarnos de pedir solo las columnas que existen
+    columnas_ideales = ['Fecha', 'tipo_movimiento', 'Categoría', 'Subcategoría', 'Monto', 'descripcion']
+    columnas_mostrar = [col for col in columnas_ideales if col in df.columns]
+    
     df_vista = df[columnas_mostrar].sort_values(by='Fecha', ascending=False).head(15)
     
     # Formatear la fecha para que se vea solo el día en la tabla
