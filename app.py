@@ -2,9 +2,10 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 import plotly.express as px
+from datetime import datetime, timedelta
 
-# Configuración de la página
-st.set_page_config(page_title="Dashboard Sergio Ruiz", page_icon="📊", layout="wide")
+# Configuración de la página (Modo Wide para aprovechar la pantalla completa)
+st.set_page_config(page_title="Finanzas Personales", page_icon="💰", layout="wide")
 
 # --- 1. CAPA DE SEGURIDAD ---
 if "autenticado" not in st.session_state:
@@ -22,7 +23,7 @@ if not st.session_state.autenticado:
             st.rerun()
         else:
             st.error("Contraseña incorrecta. Intento bloqueado.")
-    st.stop() # Detiene la ejecución aquí si no hay autenticación
+    st.stop()
 
 # --- 2. CONEXIÓN Y EXTRACCIÓN DE DATOS ---
 @st.cache_resource
@@ -31,9 +32,8 @@ def init_connection():
 
 supabase: Client = init_connection()
 
-@st.cache_data(ttl=60) # Guarda los datos en caché por 60 segundos
+@st.cache_data(ttl=60)
 def cargar_datos():
-    # Descargar tablas
     trans = supabase.table("transacciones").select("*").execute().data
     cats = supabase.table("categorias").select("*").execute().data
     subcats = supabase.table("subcategorias").select("*").execute().data
@@ -45,13 +45,9 @@ def cargar_datos():
     df_cats = pd.DataFrame(cats)
     df_subcats = pd.DataFrame(subcats)
     
-    # 1. Cruzar con subcategorías usando LEFT JOIN para no perder filas
     df_completo = pd.merge(df_trans, df_subcats, left_on="subcategoria_id", right_on="id", how="left", suffixes=("", "_sub"))
-    
-    # 2. Cruzar con categorías usando LEFT JOIN
     df_completo = pd.merge(df_completo, df_cats, left_on="categoria_id", right_on="id", how="left", suffixes=("", "_cat"))
     
-    # 3. Rellenar los vacíos (Por si alguna transacción no enlazó bien su categoría)
     if 'nombre' in df_completo.columns:
         df_completo['nombre'] = df_completo['nombre'].fillna('Sin Subcategoría')
     else:
@@ -62,7 +58,6 @@ def cargar_datos():
     else:
         df_completo['nombre_cat'] = 'Sin Categoría'
     
-    # Limpiar y renombrar para el análisis
     df_completo.rename(columns={
         "nombre": "Subcategoría", 
         "nombre_cat": "Categoría", 
@@ -73,61 +68,151 @@ def cargar_datos():
     df_completo['Fecha'] = pd.to_datetime(df_completo['Fecha'])
     return df_completo
 
-# --- 3. INTERFAZ DEL DASHBOARD ---
-st.title("📊 Panel Financiero - Sergio Ruiz")
-st.markdown("---")
+df_crudo = cargar_datos()
 
-df = cargar_datos()
-
-if df.empty:
-    st.info("Aún no hay transacciones en la base de datos. Usa tu App Web para registrar el primer movimiento.")
+if df_crudo.empty:
+    st.title("📊 Control de Gastos e Ingresos")
+    st.info("Aún no hay transacciones en la base de datos. ¡Registra algo en tu web primero!")
 else:
-    # Calcular KPIs
-    ingresos_totales = df[df['tipo_movimiento'] == 'Ingreso']['Monto'].sum()
-    gastos_totales = df[df['tipo_movimiento'] == 'Gasto']['Monto'].sum()
-    balance = ingresos_totales - gastos_totales
+    # --- 3. DISEÑO DE FILTROS EN LA BARRA LATERAL (SIDEBAR) ---
+    st.sidebar.header("🔍 Filtros de Análisis")
+    st.sidebar.markdown("Ajusta los parámetros para segmentar la información.")
+    
+    # Filtro 1: Rango de Fechas Dinámico
+    fecha_min = df_crudo['Fecha'].min().date()
+    fecha_max = df_crudo['Fecha'].max().date()
+    
+    st.sidebar.subheader("Calendario")
+    rango_fechas = st.sidebar.date_input(
+        "Selecciona el período:",
+        value=(fecha_min, fecha_max),
+        min_value=fecha_min,
+        max_value=fecha_max
+    )
+    
+    # Filtro 2: Selector de Categorías Multi-selección
+    st.sidebar.subheader("Segmentación")
+    categorias_disponibles = sorted(df_crudo['Categoría'].unique())
+    categorias_seleccionadas = st.sidebar.multiselect(
+        "Filtrar por categorías:",
+        options=categorias_disponibles,
+        default=categorias_disponibles # Por defecto vienen todas marcadas
+    )
+    
+    # --- APLICACIÓN DE FILTROS ---
+    # Filtrar por rango de fecha (evita errores si el usuario solo marca una fecha en el calendario)
+    if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
+        inicio, fin = rango_fechas
+        df_filtrado = df_crudo[(df_crudo['Fecha'].dt.date >= inicio) & (df_crudo['Fecha'].dt.date <= fin)]
+    else:
+        df_filtrado = df_crudo.copy()
+        
+    # Filtrar por categorías
+    df_filtrado = df_filtrado[df_filtrado['Categoría'].isin(categorias_seleccionadas)]
 
-    # Tarjetas de Resumen
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Ingresos Históricos", f"${ingresos_totales:,.0f}".replace(",", "."))
-    col2.metric("Gastos Históricos", f"${gastos_totales:,.0f}".replace(",", "."))
-    col3.metric("Liquidez Disponible", f"${balance:,.0f}".replace(",", "."), 
-                delta="Cuidado con los flujos" if balance < 0 else "Flujo positivo")
-
+    # --- 4. INTERFAZ VISUAL DEL DASHBOARD ---
+    st.title("📊 Mi Centro de Mando Financiero")
+    st.markdown("Un análisis detallado de dónde se va cada peso en tiempo real.")
     st.markdown("---")
 
-    # Fila de Gráficos
-    chart_col1, chart_col2 = st.columns(2)
+    if df_filtrado.empty:
+        st.warning("No hay transacciones que coincidan con los filtros seleccionados en la barra lateral.")
+    else:
+        # Cálculos de KPIs basados en el filtro
+        ingresos = df_filtrado[df_filtrado['tipo_movimiento'] == 'Ingreso']['Monto'].sum()
+        gastos = df_filtrado[df_filtrado['tipo_movimiento'] == 'Gasto']['Monto'].sum()
+        balance = ingresos - gastos
 
-    with chart_col1:
-        st.subheader("Distribución de Gastos")
-        df_gastos = df[df['tipo_movimiento'] == 'Gasto']
-        if not df_gastos.empty:
-            gastos_agrupados = df_gastos.groupby("Categoría")["Monto"].sum().reset_index()
-            fig_pie = px.pie(gastos_agrupados, values='Monto', names='Categoría', 
-                             hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-            st.plotly_chart(fig_pie, use_container_width=True)
-        else:
-            st.warning("No hay datos de gastos para graficar.")
+        # Tarjetas de Resumen Estilizadas
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.container(border=True)
+            st.metric("Total Ingresos", f"${ingresos:,.0f}".replace(",", "."), delta=None)
+        with col2:
+            st.container(border=True)
+            st.metric("Total Gastos", f"${gastos:,.0f}".replace(",", "."), delta=None, delta_color="inverse")
+        with col3:
+            st.container(border=True)
+            # Cambia de color dinámicamente si el balance es positivo o negativo
+            st.metric(
+                "Saldo Neto (Liquidez)", 
+                f"${balance:,.0f}".replace(",", "."), 
+                delta="Superávit" if balance >= 0 else "Déficit en el período",
+                delta_color="normal" if balance >= 0 else "inverse"
+            )
 
-    with chart_col2:
-        st.subheader("Flujo de Caja en el Tiempo")
-        df_tiempo = df.groupby(['Fecha', 'tipo_movimiento'])['Monto'].sum().reset_index()
-        fig_line = px.line(df_tiempo, x='Fecha', y='Monto', color='tipo_movimiento', 
-                           markers=True, color_discrete_map={"Ingreso": "#20c997", "Gasto": "#ff6b6b"})
-        st.plotly_chart(fig_line, use_container_width=True)
+        st.markdown("##") # Espaciador
 
-    st.markdown("---")
-    
-    # Tabla de últimos movimientos
-    st.subheader("Últimos Movimientos Registrados")
-    
-    # Asegurarnos de pedir solo las columnas que existen
-    columnas_ideales = ['Fecha', 'tipo_movimiento', 'Categoría', 'Subcategoría', 'Monto', 'descripcion']
-    columnas_mostrar = [col for col in columnas_ideales if col in df.columns]
-    
-    df_vista = df[columnas_mostrar].sort_values(by='Fecha', ascending=False).head(15)
-    
-    # Formatear la fecha para que se vea solo el día en la tabla
-    df_vista['Fecha'] = df_vista['Fecha'].dt.strftime('%Y-%m-%d')
-    st.dataframe(df_vista, use_container_width=True, hide_index=True)
+        # --- 5. BLOQUE DE GRÁFICOS OPTIMIZADOS (PLOTLY PREMIUM) ---
+        chart_col1, chart_col2 = st.columns([4, 6]) # Distribución de tamaño (40% y 60%)
+
+        with chart_col1:
+            st.subheader("🍕 Distribución del Gasto")
+            df_gastos = df_filtrado[df_filtrado['tipo_movimiento'] == 'Gasto']
+            
+            if not df_gastos.empty:
+                gastos_agrupados = df_gastos.groupby("Categoría")["Monto"].sum().reset_index()
+                
+                fig_pie = px.pie(
+                    gastos_agrupados, 
+                    values='Monto', 
+                    names='Categoría', 
+                    hole=0.5, # Efecto Donut ultra moderno
+                    color_discrete_sequence=px.colors.qualitative.Safe
+                )
+                # Embellecer layout: quitar márgenes innecesarios y poner leyenda abajo
+                fig_pie.update_layout(
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("No hay gastos registrados en este período.")
+
+        with chart_col2:
+            st.subheader("📈 Tendencia del Flujo de Caja")
+            # Agrupar por fecha y tipo para ver la línea de tiempo limpia
+            df_tiempo = df_filtrado.groupby(['Fecha', 'tipo_movimiento'])['Monto'].sum().reset_index()
+            
+            fig_line = px.line(
+                df_tiempo, 
+                x='Fecha', 
+                y='Monto', 
+                color='tipo_movimiento', 
+                markers=True,
+                color_discrete_map={"Ingreso": "#20c997", "Gasto": "#ff6b6b"},
+                template="plotly_white" # Fondo limpio y estilizado
+            )
+            # Hacer las líneas curvas y suaves, ajustar grillas
+            fig_line.update_traces(line_shape="spline", width=3)
+            fig_line.update_layout(
+                margin=dict(t=10, b=10, l=10, r=10),
+                xaxis=dict(showgrid=True, gridcolor="#f1f3f5"),
+                yaxis=dict(showgrid=True, gridcolor="#f1f3f5"),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5, title_text="")
+            )
+            st.plotly_chart(fig_line, use_container_width=True)
+
+        st.markdown("---")
+        
+        # --- 6. TABLA DE CONTROL INTERACTIVA ---
+        st.subheader("📋 Historial Detallado de Movimientos")
+        st.markdown("Puedes hacer clic en los encabezados de la tabla para ordenar los datos instantáneamente.")
+        
+        columnas_ideales = ['Fecha', 'tipo_movimiento', 'Categoría', 'Subcategoría', 'Monto', 'descripcion']
+        columnas_mostrar = [col for col in columnas_ideales if col in df_filtrado.columns]
+        
+        df_vista = df_filtrado[columnas_mostrar].sort_values(by='Fecha', ascending=False)
+        df_vista['Fecha'] = df_vista['Fecha'].dt.strftime('%Y-%m-%d')
+        
+        # Usar st.dataframe con contenedor expandido para una lectura óptima
+        st.dataframe(
+            df_vista, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "Monto": st.column_config.NumberColumn("Monto", format="$%d"),
+                "tipo_movimiento": "Tipo",
+                "descripcion": "Descripción u Observación"
+            }
+        )
